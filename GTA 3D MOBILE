@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>GTA 3D Mobile</title>
+<style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { background:#87CEEB; overflow:hidden; font-family:Arial; }
+  #game { width:100vw; height:100vh; display:block; }
+  #controls {
+    position:fixed; bottom:20px; left:0; right:0; z-index:100;
+    display:flex; justify-content:space-between; padding:0 20px;
+    pointer-events:none;
+  }
+.btn-group { display:flex; gap:12px; pointer-events:auto; }
+.btn {
+    width:65px; height:65px; background:#ffffff40; border:3px solid #fff;
+    border-radius:50%; color:#fff; font-size:22px; font-weight:bold;
+    display:flex; align-items:center; justify-content:center;
+    backdrop-filter:blur(10px); user-select:none; touch-action:manipulation;
+    box-shadow:0 4px 15px rgba(0,0,0,0.4);
+  }
+.btn:active { background:#FFD70066; transform:scale(0.9); }
+  #btnAction {
+    position:fixed; bottom:100px; right:20px; width:75px; height:75px;
+    background:#00FF0040; border:3px solid #00FF00; pointer-events:auto;
+  }
+  #btnShoot {
+    position:fixed; bottom:100px; right:105px; width:75px; height:75px;
+    background:#FF000040; border:3px solid #FF0000; pointer-events:auto; display:none;
+  }
+  #ui {
+    position:fixed; top:15px; left:15px; color:#fff; font-size:16px;
+    text-shadow:2px 2px 4px #000; z-index:100;
+  }
+  #weapon { position:fixed; top:15px; right:15px; color:#FFD700; font-size:20px; text-shadow:2px 2px 4px #000; z-index:100; }
+  #crosshair {
+    position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+    width:30px; height:30px; border:2px solid #FF0000; border-radius:50%;
+    pointer-events:none; z-index:100; display:none;
+  }
+  #crosshair::before, #crosshair::after {
+    content:''; position:absolute; background:#FF0000;
+  }
+  #crosshair::before { width:2px; height:10px; left:14px; top:-6px; }
+  #crosshair::after { width:10px; height:2px; left:-6px; top:14px; }
+</style>
+<script type="importmap">
+{"imports": {"three": "https://unpkg.com/three@0.160.0/build/three.module.js"}}
+</script>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="ui">
+  <div id="mode">🚗 No Carro</div>
+  <div style="font-size:12px;">NPCs: <span id="npcCount">0</span></div>
+</div>
+<div id="weapon"></div>
+<div id="crosshair"></div>
+<div id="controls">
+  <div class="btn-group">
+    <div class="btn" id="btnLeft">◀</div>
+    <div class="btn" id="btnRight">▶</div>
+  </div>
+  <div class="btn-group">
+    <div class="btn" id="btnBrake">■</div>
+    <div class="btn" id="btnGas">▲</div>
+  </div>
+</div>
+<div class="btn" id="btnAction">SAIR</div>
+<div class="btn" id="btnShoot">🔫</div>
+
+<script type="module">
+import * as THREE from 'three';
+
+const canvas = document.getElementById('game');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87CEEB);
+scene.fog = new THREE.Fog(0x87CEEB, 80, 300);
+
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setClearColor(0x87CEEB, 1);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+
+const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+sun.position.set(100, 150, 50);
+sun.castShadow = true;
+sun.shadow.camera.left = -200;
+sun.shadow.camera.right = 200;
+sun.shadow.camera.top = 200;
+sun.shadow.camera.bottom = -200;
+scene.add(sun);
+scene.add(new THREE.AmbientLight(0x404040, 0.7));
+
+// CÉU
+const sunSphere = new THREE.Mesh(
+  new THREE.SphereGeometry(15, 32, 32),
+  new THREE.MeshBasicMaterial({ color: 0xFFFF00 })
+);
+sunSphere.position.set(100, 150, -200);
+scene.add(sunSphere);
+
+// MAPA INFINITO
+const CHUNK_SIZE = 100;
+let loadedChunks = new Map();
+let buildings = [], npcs = [], motos = [], weapons = [];
+
+function createChunk(chunkX, chunkZ) {
+  const key = `${chunkX},${chunkZ}`;
+  if(loadedChunks.has(key)) return;
+
+  const chunk = new THREE.Group();
+  const worldX = chunkX * CHUNK_SIZE;
+  const worldZ = chunkZ * CHUNK_SIZE;
+
+  // CHÃO
+  const grass = new THREE.Mesh(
+    new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE),
+    new THREE.MeshStandardMaterial({ color: 0x228B22 })
+  );
+  grass.rotation.x = -Math.PI / 2;
+  grass.position.set(worldX, 0, worldZ);
+  grass.receiveShadow = true;
+  chunk.add(grass);
+
+  // RUA
+  const street = new THREE.Mesh(
+    new THREE.BoxGeometry(20, 0.1, CHUNK_SIZE),
+    new THREE.MeshStandardMaterial({ color: 0x2F2F2F })
+  );
+  street.position.set(worldX, 0.05, worldZ);
+  street.receiveShadow = true;
+  chunk.add(street);
+
+  // FAIXAS
+  for(let i = -CHUNK_SIZE/2; i < CHUNK_SIZE/2; i += 20) {
+    const stripe = new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 8),
+      new THREE.MeshBasicMaterial({ color: 0xFFFF00 })
+    );
+    stripe.rotation.x = -Math.PI / 2;
+    stripe.position.set(worldX, 0.11, worldZ + i);
+    chunk.add(stripe);
+  }
+
+  // PRÉDIOS/CASAS
+  for(let i = 0; i < 5; i++) {
+    let x = worldX + (Math.random() - 0.5) * CHUNK_SIZE * 0.6;
+    let z = worldZ + (Math.random() - 0.5) * CHUNK_SIZE * 0.6;
+    if(Math.abs(x - worldX) < 15) continue;
+
+    let isHouse = Math.random() > 0.4;
+    let h = isHouse? 5 + Math.random() * 4 : 15 + Math.random() * 30;
+    let w = 6 + Math.random() * 4;
+    let d = 6 + Math.random() * 4;
+
+    const building = new THREE.Mesh(
+      new THREE.BoxGeometry(w, h, d),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(Math.random(), 0.3, 0.5) })
+    );
+    building.position.set(x, h/2, z);
+    building.castShadow = true;
+    building.userData.isBuilding = true;
+    chunk.add(building);
+    buildings.push(building);
+
+    if(isHouse) {
+      const roof = new THREE.Mesh(
+        new THREE.ConeGeometry(w/1.5, 3, 4),
+        new THREE.MeshStandardMaterial({ color: 0x8B4513 })
+      );
+      roof.position.set(x, h + 1.5, z);
+      roof.rotation.y = Math.PI / 4;
+      chunk.add(roof);
+    }
+  }
+
+  // POSTES
+  for(let i = -CHUNK_SIZE/2; i < CHUNK_SIZE/2; i += 30) {
+    [-12, 12].forEach(side => {
+      const pole = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.2, 0.3, 8),
+        new THREE.MeshStandardMaterial({ color: 0x444444 })
+      );
+      pole.position.set(worldX + side, 4, worldZ + i);
+      chunk.add(pole);
+    });
+  }
+
+  // NPCS
+  if(Math.random() > 0.5) {
+    const npc = createNPC(
+      worldX + (Math.random() - 0.5) * 30,
+      worldZ + (Math.random() - 0.5) * 30
+    );
+    chunk.add(npc);
+    npcs.push(npc);
+  }
+
+  // MOTOS
+  if(Math.random() > 0.7) {
+    const moto = createMoto(
+      worldX + (Math.random() - 0.5) * 20,
+      worldZ + (Math.random() - 0.5) * 20
+    );
+    chunk.add(moto);
+    motos.push(moto);
+  }
+
+  // ARMAS
+  if(Math.random() > 0.8) {
+    const weapon = createWeapon(
+      worldX + (Math.random() - 0.5) * 15,
+      worldZ + (Math.random() - 0.5) * 15
+    );
+    chunk.add(weapon);
+    weapons.push(weapon);
+  }
+
+  scene.add(chunk);
+  loadedChunks.set(key, chunk);
+}
+
+function createNPC(x, z) {
+  const npc = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.4, 1.2),
+    new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(Math.random(), 0.7, 0.5) })
+  );
+  body.position.y = 1;
+  body.castShadow = true;
+  npc.add(body);
+
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.35),
+    new THREE.MeshStandardMaterial({ color: 0xFFDBAC })
+  );
+  head.position.y = 1.9;
+  npc.add(head);
+
+  npc.position.set(x, 0, z);
+  npc.userData = {
+    alive: true,
+    speed: 0.05,
+    angle: Math.random() * Math.PI * 2,
+    walkTime: 0
+  };
+  return npc;
+}
+
+function createMoto(x, z) {
+  const moto = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(0.8, 0.6, 2),
+    new THREE.MeshStandardMaterial({ color: 0x0088FF, metalness: 0.8 })
+  );
+  body.position.y = 0.6;
+  moto.add(body);
+
+  for(let z of [-0.7, 0.7]) {
+    const wheel = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.35, 0.35, 0.2, 16),
+      new THREE.MeshStandardMaterial({ color: 0x111111 })
+    );
+    wheel.rotation.z = Math.PI / 2;
+    wheel.position.set(0, 0.35, z);
+    moto.add(wheel);
+  }
+
+  moto.position.set(x, 0, z);
+  moto.userData.isMoto = true;
+  moto.userData.occupied = false;
+  return moto;
+}
+
+function createWeapon(x, z) {
+  const weapon = new THREE.Mesh(
+    new THREE.BoxGeometry(0.1, 0.1, 0.8),
+    new THREE.MeshStandardMaterial({ color: 0x333333, metalness: 0.9 })
+  );
+  weapon.position.set(x, 0.5, z);
+  weapon.userData.isWeapon = true;
+  weapon.userData.picked = false;
+  return weapon;
+}
+
+function updateChunks() {
+  const playerChunkX = Math.floor(player.position.x / CHUNK_SIZE);
+  const playerChunkZ = Math.floor(player.position.z / CHUNK_SIZE);
+
+  for(let x = -2; x <= 2; x++) {
+    for(let z = -2; z <= 2; z++) {
+      createChunk(playerChunkX + x, playerChunkZ + z);
+    }
+  }
+
+  loadedChunks.forEach((chunk, key) => {
+    const [cx, cz] = key.split(',').map(Number);
+    if(Math.abs(cx - playerChunkX) > 3 || Math.abs(cz - playerChunkZ) > 3) {
+      scene.remove(chunk);
+      loadedChunks.delete(key);
+    }
+  });
+}
+
+// PLAYER
+const player = new THREE.Group();
+const playerBody = new THREE.Mesh(
+  new THREE.CapsuleGeometry(0.4, 1.2),
+  new THREE.MeshStandardMaterial({ color: 0x00FF00 })
+);
+playerBody.position.y = 1;
+player.add(playerBody);
+scene.add(player);
+
+// CARRO
+const carGroup = new THREE.Group();
+const carBody = new THREE.Mesh(
+  new THREE.BoxGeometry(2, 1, 4),
+  new THREE.MeshStandardMaterial({ color: 0xFF0000, metalness: 0.9 })
+);
+carBody.position.y = 0.8;
+carBody.castShadow = true;
+carGroup.add(carBody);
+scene.add(carGroup);
+carGroup.position.set(0, 0, 5);
+
+let gameState = {
+  mode: 'car', // 'car', 'foot', 'moto'
+  vehicle: carGroup,
+  speed: 0, maxSpeed: 1.8, angle: 0, velY: 0, grounded: true,
+  hasWeapon: false, ammo: 0
+};
+
+camera.position.set(0, 10, 15);
+
+// CONTROLES
+let keys = {};
+['btnGas','btnBrake','btnLeft','btnRight'].forEach(id => {
+  const btn = document.getElementById(id);
+  const key = id.replace('btn','').toLowerCase();
+  btn.ontouchstart = btn.onmousedown = e => { e.preventDefault(); keys[key] = true; };
+  btn.ontouchend = btn.onmouseup = e => { e.preventDefault(); keys[key] = false; };
+});
+
+document.getElementById('btnAction').onclick = () => {
+  if(gameState.mode === 'car') {
+    // SAIR DO CARRO
+    gameState.mode = 'foot';
+    player.position.copy(carGroup.position);
+    player.position.x += 3;
+    document.getElementById('mode').textContent = '🚶 A pé';
+    document.getElementById('btnAction').textContent = 'ENTRAR';
+  } else if(gameState.mode === 'foot') {
+    // ENTRAR NO VEÍCULO MAIS PRÓXIMO
+    let closest = null, minDist = 5;
+    [...motos, carGroup].forEach(v => {
+      if(v.userData.occupied) return;
+      let dist = player.position.distanceTo(v.position);
+      if(dist < minDist) { minDist = dist; closest = v; }
+    });
+    if(closest) {
+      gameState.vehicle = closest;
+      gameState.mode = closest.userData.isMoto? 'moto' : 'car';
+      document.getElementById('mode').textContent = closest.userData.isMoto? '🏍️ Na Moto' : '🚗 No Carro';
+      document.getElementById('btnAction').textContent = 'SAIR';
+    }
+  } else {
+    // SAIR DA MOTO/CARRO
+    gameState.mode = 'foot';
+    player.position.copy(gameState.vehicle.position);
+    player.position.x += 3;
+    document.getElementById('mode').textContent = '🚶 A pé';
+    document.getElementById('btnAction').textContent = 'SUBIR';
+  }
+};
+
+document.getElementById('btnShoot').onclick = () => {
+  if(!gameState.hasWeapon || gameState.ammo <= 0) return;
+  gameState.ammo--;
+
+  // TIRO - MATA NPC MAIS PRÓXIMO NA MIRA
+  let closest = null, minDist = 30;
+  let playerPos = gameState.mode === 'foot'? player.position : gameState.vehicle.position;
+  let forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), gameState.angle);
+
+  npcs.forEach(npc => {
+    if(!npc.userData.alive) return;
+    let toNPC = new THREE.Vector3().subVectors(npc.position, playerPos);
+    let dist = toNPC.length();
+    let angle = forward.angleTo(toNPC.normalize());
+    if(dist < minDist && angle < 0.3) { // 30 graus de mira
+      minDist = dist;
+      closest = npc;
+    }
+  });
+
+  if(closest) {
+    closest.userData.alive = false;
+    closest.rotation.x = Math.PI / 2; // Cai morto
+    closest.children[0].material.color.set(0xFF0000);
+  }
+
+  updateWeaponUI();
+};
+
+function updateWeaponUI() {
+  document.getElementById('weapon').textContent = gameState.hasWeapon? `🔫 ${gameState.ammo}` : '';
+  document.getElementById('btnShoot').style.display = gameState.hasWeapon? 'flex' : 'none';
+  document.getElementById('crosshair').style.display = gameState.hasWeapon && gameState.mode === 'foot'? 'block' : 'none';
+}
+
+function updatePlayer() {
+  let speed = gameState.mode === 'foot'? 0.15 : gameState.mode === 'moto'? 2.2 : 1.8;
+  let turnSpeed = gameState.mode === 'foot'? 0.08 : 0.04;
+
+  // MOVIMENTO
+  if(keys.gas) {
+    if(gameState.mode === 'foot') {
+      player.position.x += Math.sin(gameState.angle) * speed;
+      player.position.z += Math.cos(gameState.angle) * speed;
+    } else {
+      gameState.speed = Math.min(gameState.speed + 0.03, speed);
+    }
+  } else if(keys.brake) {
+    if(gameState.mode === 'foot') {
+      player.position.x -= Math.sin(gameState.angle) * speed * 0.5;
+      player.position.z -= Math.cos(gameState.angle) * speed * 0.5;
+    } else {
+      gameState.speed = Math.max(gameState.speed - 0.05, -speed * 0.6);
+    }
+  } else if(gameState.mode!== 'foot') {
+    gameState.speed *= 0.97;
+  }
+
+  if(keys.left) gameState.angle += turnSpeed;
+  if(keys.right) gameState.angle -= turnSpeed;
+
+  // APLICA MOVIMENTO DO VEÍCULO
+  if(gameState.mode!== 'foot') {
+    gameState.vehicle.rotation.y = gameState.angle;
+    gameState.vehicle.position.x += Math.sin(gameState.angle) * gameState.speed;
+    gameState.vehicle.position.z += Math.cos(gameState.angle) * gameState.speed;
+
+    // PULO VEÍCULO
+    if(keys.jump && gameState.grounded) {
+      gameState.velY = 0.6;
+      gameState.grounded = false;
+    }
+    gameState.velY -= 0.03;
+    gameState.vehicle.position.y += gameState.velY;
+    if(gameState.vehicle.position.y <= 0) {
+      gameState.vehicle.position.y = 0;
+      gameState.velY = 0;
+      gameState.grounded = true;
+    }
+  }
+
+  // PEGAR ARMA
+  if(gameState.mode === 'foot') {
+    weapons.forEach(w => {
+      if(!w.userData.picked && player.position.distanceTo(w.position) < 2) {
+        w.userData.picked = true;
+        w.visible = false;
+        gameState.hasWeapon = true;
+        gameState.ammo = 30;
+        updateWeaponUI();
+      }
+    });
+  }
+
+  // CÂMERA
+  let target = gameState.mode === 'foot'? player : gameState.vehicle;
+  const camOffset = new THREE.Vector3(0, 10, 18).applyAxisAngle(new THREE.Vector3(0, 1, 0), gameState.angle);
+  camera.position.copy(target.position).add(camOffset);
+  camera.lookAt(target.position.x, target.position.y + 2, target.position.z);
+
+  // COLISÃO
+  buildings.forEach(building => {
+    if(target.position.distanceTo(building.position) < 12) {
+      gameState.speed *= -0.6;
+      target.position.x -= Math.sin(gameState.angle) * 4;
+      target.position.z -= Math.cos(gameState.angle) * 4;
+    }
+  });
+
+  // NPCS ANDANDO
+  npcs.forEach(npc => {
+    if(!npc.userData.alive) return;
+    npc.userData.walkTime += 0.02;
+    npc.position.x += Math.sin(npc.userData.angle) * npc.userData.speed;
+    npc.position.z += Math.cos(npc.userData.angle) * npc.userData.speed;
+    npc.rotation.y = npc.userData.angle;
+    if(Math.random() < 0.01) npc.userData.angle = Math.random() * Math.PI * 2;
+  });
+
+  document.getElementById('npcCount').textContent = npcs.filter(n => n.userData.alive).length;
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  updatePlayer();
+  updateChunks();
+  renderer.render(scene, camera);
+}
+
+window.onresize = () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+};
+
+updateChunks();
+animate();
+</script>
+</body>
+</html>
